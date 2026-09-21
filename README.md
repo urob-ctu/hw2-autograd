@@ -10,12 +10,15 @@ Most of the functions should be elementary. However, if you are unsure how to pr
 
 Please be aware that the variable `other` in function `__pow__` is either `int` or `float` and, therefore, cannot be put in the parent set of output. Backpropagation is available only for objects in the class `Tensor`.
 
-Another tip is that the `reshape_gradient` function is only needed in the `__add__`, `__mul__` and `matmul` functions. Only in these three functions do we have the possibility of broadcasting (in `matmul` it is the leading batch dimensions that broadcast, e.g. `(B, n, k) @ (k, m)`). The `reshape_gradient` function aims to solve the problem of calculating the gradient for broadcasted values.
+Start with the `reshape_gradient` function at the top of the file. When numpy broadcasts an operand, e.g. a bias of shape `(3,)` added to a batch of shape `(2, 3)`, every element of the operand is used several times, and its gradient is the sum of the gradients of all its copies. `reshape_gradient` takes the gradient in the shape of the output and sums it down to the shape of the operand. Broadcasting does two things - it prepends axes to the operand of lower rank and it stretches axes of size 1 - and the function undoes them in two steps. Read the [broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html) first; `test.py` checks this function on its own before anything else.
+
+The function is only needed in the `__add__`, `__mul__` and `matmul` functions. Only in these three functions do we have the possibility of broadcasting (in `matmul` it is the leading batch dimensions that broadcast, e.g. `(B, n, k) @ (k, m)`), and all the other operations are built from them.
 
 ### What exactly is expected
 The docstrings in `engine.py` are part of the assignment. The conventions that the evaluation relies on:
 
 - The `grad` of every tensor always has the same shape as its `data`.
+- `reshape_gradient(gradient, target_shape)` returns an array of exactly `target_shape`, e.g. `(2, 1)` and not `(2,)`. It is tested on its own as well.
 - `backward()` sets the gradient of the tensor it is called on to ones and **accumulates** (`+=`) into all the other tensors of the graph. A tensor may be used several times in one expression (`a * a + a`).
 - Every `_backward` has to take the gradient arriving from above (`out.grad`) into account, including `sum` and both loss functions - they are not always the last operation of the graph.
 - `sum(axis)` works like `np.sum`, for `axis=None` as well as for an integer axis.

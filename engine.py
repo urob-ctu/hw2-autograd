@@ -28,21 +28,26 @@ def reshape_gradient(gradient: np.ndarray, target_shape: tuple) -> np.ndarray:
         target_shape: The shape of the target Tensor.
 
     Returns:
-        The gradient summed down to `target_shape`.
+        The gradient summed down to exactly `target_shape`.
+
+    Numpy broadcasts in two steps, and each of them is undone by a sum:
+      1) a Tensor of lower rank gets axes of size 1 prepended: (3,) -> (1, 3)
+      2) axes of size 1 are stretched to the size of the other operand: (1, 3) -> (2, 3)
+    Compare with `Tensor.sum`: there the forward pass sums and the backward pass
+    broadcasts, here it is the other way round.
     """
     gradient = np.asarray(gradient)
 
-    # axes that broadcasting prepended to the target are summed away
-    extra_dims = gradient.ndim - len(target_shape)
-    gradient = np.sum(gradient, axis=tuple(range(extra_dims)))
+    # 1) Sum over the leading axes that the target does not have, so that the
+    #    gradient ends up with as many axes as the target. A scalar target, shape (),
+    #    is the extreme case: all the axes are summed away.
+    gradient = ...  # 🌀 your code here
 
-    # axes where the target has size 1 but the gradient does not were stretched
-    broadcast_axes = tuple(
-        i
-        for i, (grad_axis, tar_axis) in enumerate(zip(gradient.shape, target_shape))
-        if tar_axis == 1 and grad_axis != 1
-    )
-    return np.sum(gradient, axis=broadcast_axes, keepdims=True)
+    # 2) Sum over the axes where the target has size 1 and the gradient does not.
+    #    These axes stay in the result with size 1.
+    gradient = ...  # 🌀 your code here
+
+    return gradient
 
 
 def back_none():

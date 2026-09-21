@@ -100,10 +100,18 @@ def numpy_cross_entropy(logits, target):
 
 if __name__ == "__main__":
     try:
-        from engine import Tensor
+        from engine import Tensor, reshape_gradient
     except Exception:
         print(f"engine.py could not be imported:\n{traceback.format_exc()}")
         sys.exit(1)
+
+    print("--- reshape_gradient (everything that broadcasts depends on it, get it right first)")
+    G, G3 = rnd(2, 3), rnd(2, 3, 4)
+    check_values("nothing was broadcast: (2, 3) stays (2, 3)", lambda: [reshape_gradient(G, (2, 3))], [G])
+    check_values("scalar target: (2, 3) -> ()", lambda: [reshape_gradient(G, ())], [G.sum()])
+    check_values("target of lower rank: (2, 3) -> (3,)", lambda: [reshape_gradient(G, (3,))], [G.sum(axis=0)])
+    check_values("stretched axis of size 1: (2, 3) -> (2, 1)", lambda: [reshape_gradient(G, (2, 1))], [G.sum(axis=1, keepdims=True)])
+    check_values("both at once: (2, 3, 4) -> (3, 1)", lambda: [reshape_gradient(G3, (3, 1))], [G3.sum(axis=(0, 2)).reshape(3, 1)])
 
     print("--- basic operations")
     check("a + b", lambda a, b: a + b, lambda a, b: a + b, rnd(2, 3), rnd(2, 3))
