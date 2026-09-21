@@ -47,6 +47,12 @@ To run the tests, you may use the following command:
 python test.py      # add -v for full tracebacks
 ```
 
+Once everything passes, see your engine do what it was built for:
+```bash
+python demo.py
+```
+It trains a small neural network on three interleaved spirals using nothing but your `Tensor`. The loss has to fall and the accuracy should end above 95 %. With `matplotlib` installed it also saves the decision regions to `demo.png`. The grading contains a similar, much smaller training run.
+
 ## Submission and evaluation
 Upload a zip file that contains your `engine.py` to BRUTE. You may use the provided bash script to create it:
 ```bash
