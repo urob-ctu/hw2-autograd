@@ -17,39 +17,32 @@ np.set_printoptions(formatter={"float": "{: 0.3f}".format})
 
 
 def reshape_gradient(gradient: np.ndarray, target_shape: tuple) -> np.ndarray:
-    """Reshape the gradient to match the shape of the target Tensor.
+    """Reduce a broadcast gradient back to the shape of the target Tensor.
+
+    When numpy broadcasts a Tensor of shape `target_shape` to a larger shape,
+    every element of the Tensor is used several times, so its gradient is the
+    sum of the gradients of all its copies.
 
     Args:
-        gradient: The gradient to reshape.
+        gradient: The gradient in the (broadcast) shape of the operation's output.
         target_shape: The shape of the target Tensor.
 
     Returns:
-        The reshaped gradient.
+        The gradient summed down to `target_shape`.
     """
+    gradient = np.asarray(gradient)
 
-    # if the gradient has the same shape as the target shape, return the gradient
-    if gradient.shape == target_shape:
-        return gradient
+    # axes that broadcasting prepended to the target are summed away
+    extra_dims = gradient.ndim - len(target_shape)
+    gradient = np.sum(gradient, axis=tuple(range(extra_dims)))
 
-    # if the target shape is scalar, return the sum of the gradient
-    if target_shape == ():
-        return np.sum(gradient)
-
-    # if the target shape is a vector, expand the dimension
-    keepdims = True
-    while len(target_shape) != len(gradient.shape):
-        target_shape = (1, *target_shape)
-        keepdims = False
-
-    # otherwise, we need reduce the gradient along axes that were broadcast
-    broadcast_axes = []
-    for i, (grad_axis, tar_axis) in enumerate(zip(gradient.shape, target_shape)):
-        # if the target axis is 1 and the gradient is larger, then
-        # the Tensor was broadcast along this axis
-        if tar_axis == 1 and grad_axis != 1:
-            broadcast_axes.append(i)
-
-    return np.sum(gradient, axis=tuple(broadcast_axes), keepdims=keepdims)
+    # axes where the target has size 1 but the gradient does not were stretched
+    broadcast_axes = tuple(
+        i
+        for i, (grad_axis, tar_axis) in enumerate(zip(gradient.shape, target_shape))
+        if tar_axis == 1 and grad_axis != 1
+    )
+    return np.sum(gradient, axis=broadcast_axes, keepdims=True)
 
 
 def back_none():
@@ -78,7 +71,7 @@ class Tensor:
     def __init__(
         self, data, _parent=(), _op="", label="", req_grad=False, is_weight=False
     ):
-        self.data = np.array(data)
+        self.data = np.array(data, dtype=np.float64)
         self.label = label
         self.grad = np.zeros(self.data.shape)
         self.req_grad = req_grad
@@ -114,17 +107,14 @@ class Tensor:
         return out
 
     def matmul(self, other) -> "Tensor":
-        if type(self) is type(other):
-            pass
-        elif isinstance(other, Tensor):
-            pass
-        else:
-            other = Tensor(other)
+        """Matrix product, like `np.matmul`. Both operands have at least 2
+        dimensions; leading (batch) dimensions broadcast, e.g. (B, n, k) @ (k, m)."""
+        other = other if isinstance(other, Tensor) else Tensor(other)
         out = ...  # 🌀 your code here
 
         def _backward():
-            self.grad += ...  # 🌀 your code here
-            other.grad += ...  # 🌀 your code here
+            self.grad += reshape_gradient(..., self.data.shape)  # 🌀 your code here
+            other.grad += reshape_gradient(..., other.data.shape)  # 🌀 your code here
 
         out._backward = _backward
         return out
@@ -150,6 +140,7 @@ class Tensor:
         return self * -1
 
     def __truediv__(self, other) -> "Tensor":
+        other = other if isinstance(other, Tensor) else Tensor(other)
         return self * (other**-1)
 
     def __radd__(self, other) -> "Tensor":
@@ -165,7 +156,7 @@ class Tensor:
         return other * (self**-1)
 
     def __rpow__(self, other) -> "Tensor":
-        return other**self
+        return (self * np.log(other)).exp()
 
     # +++++++++++++++++ Basic Functions +++++++++++++++++
 
@@ -212,6 +203,7 @@ class Tensor:
     # +++++++++++++++++ Other Functions +++++++++++++++++
 
     def sum(self, axis=None) -> "Tensor":
+        """Sum over `axis` (an int, or None for all elements), like `np.sum`."""
         out = ...  # 🌀 your code here
 
         def _backward():
@@ -228,8 +220,8 @@ class Tensor:
         )
 
         def _backward():
-            self.grad += out.grad[0]
-            other.grad += out.grad[1]
+            self.grad += np.take(out.grad, 0, axis=axis)
+            other.grad += np.take(out.grad, 1, axis=axis)
 
         out._backward = _backward
 
@@ -277,6 +269,10 @@ class Tensor:
     # +++++++++++++++++ Loss Functions +++++++++++++++++
 
     def cross_entropy_loss(self, target: np.ndarray) -> "Tensor":
+        """Mean cross-entropy of softmax(self) over the batch.
+
+        `self` holds the logits with shape (N, C), `target` the N class indices.
+        """
         assert (
             isinstance(target, np.ndarray) and len(target.shape) == 1
         ), "target must be a 1D numpy array"
@@ -306,6 +302,7 @@ class Tensor:
         return out
 
     def regularization_loss(self, reg: float) -> "Tensor":
+        """L2 regularization: `reg * sum(self ** 2)`."""
         out = ...  # 🌀 TODO: your code here
 
         def _backward():
@@ -317,6 +314,12 @@ class Tensor:
     # +++++++++++++++++ Backward Pass and Optimization +++++++++++++++++
 
     def backward(self) -> None:
+        """Backpropagate from this Tensor through the whole graph below it.
+
+        The gradient of this Tensor is set to ones (of its own shape), whatever
+        it was before. Every other Tensor in the graph accumulates (+=) into its
+        current gradient, so call `zero_grad` between two backward passes.
+        """
         # TODO: write function to perform backward pass
         # -------------------------------------------------
         # 🌀 INCEPTION 🌀 (Your code begins its journey here. 🚀 Do not delete this line.)
@@ -331,6 +334,8 @@ class Tensor:
         # 🌀 TERMINATION 🌀 (Your code reaches its end. 🏁 Do not delete this line.)
 
     def zero_grad(self) -> None:
+        """Set the gradient of this Tensor and of every Tensor below it in the
+        graph (intermediate results included) to zeros."""
         # TODO: write function to zero gradients
         # -------------------------------------------------
         # 🌀 INCEPTION 🌀 (Your code begins its journey here. 🚀 Do not delete this line.)
@@ -345,6 +350,8 @@ class Tensor:
         # 🌀 TERMINATION 🌀 (Your code reaches its end. 🏁 Do not delete this line.)
 
     def step(self, learning_rate: float) -> None:
+        """Gradient descent step: `data -= learning_rate * grad` for every Tensor
+        in the graph that has `req_grad=True`. Other Tensors stay untouched."""
         # TODO: write function to perform a learning step
         # -------------------------------------------------
         # 🌀 INCEPTION 🌀 (Your code begins its journey here. 🚀 Do not delete this line.)
