@@ -1,226 +1,164 @@
 #!/usr/bin/env python
+"""Local tests of HW2: python test.py [-v]
 
-import os
+Every check compares your Tensor with plain numpy: the value of an expression,
+and the gradients that backward() leaves in the inputs with numerical gradients
+(central differences). Functions you have not implemented yet simply fail, so
+you can run this from the very first line you write.
+
+The grading runs the same kind of checks with other expressions, shapes and
+values - add your own cases at the bottom of this file.
+"""
+
 import sys
 import traceback
-from pathlib import Path
 
 import numpy as np
 
+failures = 0
+rng = np.random.default_rng(42)
 
-def backprop(seed: int):
-    from engine import Tensor
 
-    ret = True
+def rnd(*shape):
+    """Random values of both signs that keep 0.1 away from zero (relu kink, division)."""
+    x = rng.normal(scale=2.0, size=shape)
+    return np.sign(x) * (np.abs(x) + 0.1)
+
+
+def pos(*shape):
+    return rng.uniform(0.5, 2.0, size=shape)
+
+
+def error_text():
+    """The whole traceback with `python test.py -v`, otherwise only its last line."""
+    text = traceback.format_exc().strip()
+    return text.replace("\n", "\n        ") if "-v" in sys.argv else text.splitlines()[-1] + "   (-v shows the traceback)"
+
+
+def report(name, problem):
+    global failures
+    failures += problem is not None
+    print(f"{'PASSED' if problem is None else 'FAILED'}  {name}" + (f"\n        {problem}" if problem else ""))
+
+
+def difference(label, got, want, rtol, atol):
+    got, want = np.asarray(got, dtype=np.float64), np.asarray(want, dtype=np.float64)
+    if got.shape != want.shape:
+        return f"{label} has shape {got.shape}, expected {want.shape}"
+    if not np.allclose(got, want, rtol=rtol, atol=atol):
+        worst = np.unravel_index(np.argmax(np.abs(got - want)), want.shape) if want.ndim else ()
+        return f"{label} is wrong: got {got[worst]:.6g}, expected {want[worst]:.6g} at index {worst}"
+    return None
+
+
+def numerical_gradient(f, inputs, i, eps=1e-6):
+    """d sum(f(*inputs)) / d inputs[i]"""
+    xs = [np.array(x, dtype=np.float64) for x in inputs]
+    grad = np.zeros_like(xs[i])
+    for idx in np.ndindex(grad.shape):
+        orig = xs[i][idx]
+        xs[i][idx] = orig + eps
+        hi = np.sum(f(*xs))
+        xs[i][idx] = orig - eps
+        lo = np.sum(f(*xs))
+        xs[i][idx] = orig
+        grad[idx] = (hi - lo) / (2 * eps)
+    return grad
+
+
+def check(name, tensor_fn, numpy_fn, *inputs):
+    """tensor_fn gets Tensors, numpy_fn gets the same values as numpy arrays."""
     try:
-        np.random.seed(seed)
-        a = Tensor(np.random.rand(2), req_grad=True)
-        np.random.seed(seed + 42)
-        b = Tensor(np.random.rand(3, 2), req_grad=True)
-
-        c = a + b
-    except Exception as e:
-        print(f"FAILED! {e}\n{traceback.format_exc()}")
-        ret = False
-    else:
-        try:  # Backward function
-            print("Backward:")
-            c.backward()
-        except Exception as e:
-            print(f"FAILED! {e}\n{traceback.format_exc()}")
-            ret = False
-        else:
-            print("PASSED!")
-
-        try:  # Zero grad function
-            print("Zero grad:")
-            c.zero_grad()
-        except Exception as e:
-            print(f"FAILED! {e}\n{traceback.format_exc()}")
-            ret = False
-        else:
-            if np.allclose(a.grad, np.zeros((2,))) and np.allclose(
-                b.grad, np.zeros((3, 2))
-            ):
-                print("PASSED!")
-            else:
-                print("FAILED! Gradient is left non-zero.")
-                ret = False
-
-        try:  # Step function
-            print("Step:")
-            np.random.seed(seed - 42)
-            a.grad = np.random.rand(2) / 10
-            np.random.seed(seed + 13)
-            b.grad = np.random.rand(3, 2) / 10
-            c.grad = b.grad * 0.987
-
-            c.step(learning_rate=1)
-        except Exception as e:
-            print(f"FAILED! {e}\n{traceback.format_exc()}")
-            ret = False
-        else:
-            a_ref = np.array([0.31965877, 0.87919537])
-            b_ref = np.array(
-                [
-                    [0.03673016, 0.27307672],
-                    [0.19393227, 0.60422773],
-                    [0.93699768, 0.10203363],
-                ]
-            )
-            if np.allclose(a.data, a_ref) and np.allclose(b.data, b_ref):
-                print("PASSED!")
-            else:
-                print("FAILED! Results do not match reference.")
-                ret = False
-    return ret
+        tensors = [Tensor(np.copy(x)) for x in inputs]
+        out = tensor_fn(*tensors)
+        problem = difference("the result", out.data, numpy_fn(*inputs), 1e-6, 1e-9)
+        if problem is None:
+            out.backward()  # the gradient of the output is set to ones, i.e. we differentiate sum(out)
+            for i, t in enumerate(tensors):
+                problem = problem or difference(f"the gradient of input {i}", t.grad, numerical_gradient(numpy_fn, inputs, i), 1e-4, 1e-6)
+    except Exception:
+        problem = error_text()
+    report(name, problem)
 
 
-def basic_operations(seed: int):
-    from engine import Tensor
-
-    np.random.seed(seed)
-    a = np.random.rand(1)
-    a_t = Tensor(a)
-    np.random.seed(seed + 1)
-    b = np.random.rand(1)
-    b_t = Tensor(b)
-
-    ret = True
+def check_values(name, procedure, expected):
+    """procedure() returns a list of arrays that has to match `expected`."""
     try:
-        print("Basic operations:")
-        if (a_t + b_t).data != (a + b):
-            print("Addition incorrect")
-        if (a_t - b_t).data != (a - b):
-            print("Substraction incorrect")
-        if (a_t * b_t).data != (a * b):
-            print("Multiplication incorrect")
-        if (a_t / b_t).data != (a / b):
-            print("Division incorrect")
-        if (a_t**3).data != (a**3):
-            print("Power incorrect")
-    except Exception as e:
-        print(f"FAILED! {e}\n{traceback.format_exc()}")
-        ret = False
-    else:
-        print("PASSED!")
-
-    return ret
+        problem = None
+        for i, (got, want) in enumerate(zip(procedure(), expected)):
+            problem = problem or difference(f"value {i}", got, want, 1e-6, 1e-9)
+    except Exception:
+        problem = error_text()
+    report(name, problem)
 
 
-def basic_functions(seed: int):
-    from engine import Tensor
-
-    np.random.seed(seed)
-    a = np.random.rand(1)
-    a = -a if a < 0 else a
-    a_t = Tensor(a)
-
-    ret = True
-    try:
-        print("Basic functions:")
-        if (a_t.sin()).data != np.sin(a):
-            print("Sine function incorrect")
-        if (a_t.cos()).data != np.cos(a):
-            print("Cosine function incorrect")
-        if (a_t.exp()).data != np.exp(a):
-            print("Exponential function incorrect")
-        if (a_t.log()).data != np.log(a):
-            print("Logarithm function incorrect")
-    except Exception as e:
-        print(f"FAILED! {e}\n{traceback.format_exc()}")
-        ret = False
-    else:
-        print("PASSED!")
-
-    return ret
-
-
-def activation_functions(seed: int):
-    from engine import Tensor
-
-    np.random.seed(seed)
-    a = np.random.rand(1)
-    a = -a if a < 0 else a
-    a_t = Tensor(a)
-
-    ret = True
-    try:
-        print("Activation functions:")
-        if (a_t.relu()).data != max(a, 0):
-            print("ReLU function incorrect")
-        if (a_t.sigmoid()).data != (1 / (1 + np.exp(-a))):
-            print("Sigmoid function incorrect")
-        if (a_t.tanh()).data != np.tanh(a):
-            print("Hyperbolic tangens function incorrect")
-    except Exception as e:
-        print(f"FAILED! {e}\n{traceback.format_exc()}")
-        ret = False
-    else:
-        print("PASSED!")
-
-    return ret
-
-
-def backward(seed: int):
-    from engine import Tensor
-
-    np.random.seed(seed)
-    a = Tensor(np.random.rand(1))
-    np.random.seed(seed + 1)
-    b = Tensor(np.random.rand(1))
-
-    ret = True
-    try:
-        print("Backward pass:")
-        c = a + b
-        d = a * (b - 3)
-        e = c.cos() / a.sin()
-        f = d.exp().log() ** -2
-        g = e.relu() + f.sigmoid()
-
-        g.backward()
-        res = np.array([a.grad, b.grad, c.grad, d.grad, e.grad, f.grad, g.grad])
-    except Exception as e:
-        print(f"FAILED! {e}\n{traceback.format_exc()}")
-        ret = False
-    else:
-        expected = np.array(
-            [
-                [-8.378998],
-                [-1.16119983],
-                [-1.28543176],
-                [0.33169193],
-                [1.0],
-                [0.2092246],
-                [1.0],
-            ]
-        )
-        if np.allclose(res, expected):
-            print("PASSED!")
-        else:
-            print("FAILED! Result does not match expected results.")
-
-    return ret
+def numpy_cross_entropy(logits, target):
+    shifted = logits - logits.max(axis=1, keepdims=True)
+    log_softmax = shifted - np.log(np.exp(shifted).sum(axis=1, keepdims=True))
+    return -log_softmax[np.arange(len(target)), target].mean()
 
 
 if __name__ == "__main__":
-    module_path = Path("./engine.py")
-    if not os.path.exists(module_path):
-        print("Module file engine could not be found")
-        sys.exit(1)
-
     try:
         from engine import Tensor
-    except Exception as e:
-        print(f"Error importing module: {e}\n{traceback.format_exc()}")
+    except Exception:
+        print(f"engine.py could not be imported:\n{traceback.format_exc()}")
         sys.exit(1)
 
-    seed = 42  # DO NOT CHANGE! or certain test will not work
+    print("--- basic operations")
+    check("a + b", lambda a, b: a + b, lambda a, b: a + b, rnd(2, 3), rnd(2, 3))
+    check("a + b, broadcasting (3,) to (2, 3)", lambda a, b: a + b, lambda a, b: a + b, rnd(3), rnd(2, 3))
+    check("a * b, broadcasting (2, 1) to (2, 3)", lambda a, b: a * b, lambda a, b: a * b, rnd(2, 1), rnd(2, 3))
+    check("a - b, scalar and vector", lambda a, b: a - b, lambda a, b: a - b, rnd(), rnd(4))
+    check("a / b", lambda a, b: a / b, lambda a, b: a / b, rnd(2, 3), rnd(2, 3))
+    check("a ** 3", lambda a: a**3, lambda a: a**3, rnd(2, 3))
+    check("1 - 2 * a", lambda a: 1 - 2 * a, lambda a: 1 - 2 * a, rnd(2, 3))
 
-    if not backprop(seed):
-        sys.exit(1)
-    basic_operations(seed)
-    basic_functions(seed)
-    activation_functions(seed)
-    backward(seed)
+    print("--- functions")
+    check("sin", lambda a: a.sin(), np.sin, rnd(2, 3))
+    check("cos", lambda a: a.cos(), np.cos, rnd(2, 3))
+    check("exp", lambda a: a.exp(), np.exp, rnd(2, 3))
+    check("log", lambda a: a.log(), np.log, pos(2, 3))
+    check("relu", lambda a: a.relu(), lambda a: np.maximum(a, 0), rnd(2, 3))
+    check("sigmoid", lambda a: a.sigmoid(), lambda a: 1 / (1 + np.exp(-a)), rnd(2, 3))
+    check("tanh", lambda a: a.tanh(), np.tanh, rnd(2, 3))
+
+    print("--- sum, matmul, graphs")
+    check("sum()", lambda a: a.sum(), np.sum, rnd(2, 3))
+    check("sum(axis=1) * w", lambda a, w: a.sum(axis=1) * w, lambda a, w: a.sum(axis=1) * w, rnd(2, 3), rnd(2))
+    check("a @ b", lambda a, b: a @ b, lambda a, b: a @ b, rnd(4, 3), rnd(3, 2))
+    check("a @ b with a batch dimension", lambda a, b: a @ b, lambda a, b: a @ b, rnd(5, 4, 3), rnd(3, 2))
+    check("a * a + a", lambda a: a * a + a, lambda a: a * a + a, rnd(2, 3))
+    check("cos(a + b) / (sin(a) + 2) + sigmoid(a * b)", lambda a, b: (a + b).cos() / (a.sin() + 2) + (a * b).sigmoid(),
+          lambda a, b: np.cos(a + b) / (np.sin(a) + 2) + 1 / (1 + np.exp(-a * b)), rnd(3), rnd(2, 3))  # fmt: skip
+
+    print("--- losses")
+    target = np.array([2, 0, 1, 2])
+    check("regularization_loss", lambda a: a.regularization_loss(0.1), lambda a: 0.1 * np.sum(a**2), rnd(2, 3))
+    check("cross_entropy_loss", lambda a: a.cross_entropy_loss(target), lambda a: numpy_cross_entropy(a, target), rnd(4, 3))
+    check("cross_entropy_loss * 2", lambda a: a.cross_entropy_loss(target) * 2, lambda a: numpy_cross_entropy(a, target) * 2, rnd(4, 3))
+
+    print("--- zero_grad and step")
+    A, B = rnd(2, 3), rnd(2, 3)
+
+    def twice():
+        a, b = Tensor(np.copy(A)), Tensor(np.copy(B))
+        out = (a * b).sin()
+        out.backward()
+        out.zero_grad()
+        zeroed = np.copy(a.grad)
+        out.backward()
+        return [zeroed, a.grad]
+
+    def one_step():
+        a, b = Tensor(np.copy(A), req_grad=True), Tensor(np.copy(B))
+        out = a * b
+        out.backward()
+        out.step(learning_rate=0.1)
+        return [a.data, b.data]
+
+    check_values("backward, zero_grad, backward gives the same gradient as one backward", twice, [np.zeros_like(A), np.cos(A * B) * B])
+    check_values("step changes only tensors with req_grad=True", one_step, [A - 0.1 * B, B])
+
+    print(f"\n{failures} check(s) failed." if failures else "\nAll checks passed.")
+    sys.exit(1 if failures else 0)
